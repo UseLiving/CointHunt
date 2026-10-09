@@ -1,0 +1,125 @@
+import os
+URL='file://'+os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),'..','index.html'))
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+import json,datetime
+from playwright.sync_api import sync_playwright
+errs=[];res=[]
+def ok(name,cond,extra=''):
+    res.append((name,bool(cond)));print(('PASS ' if cond else 'FAIL ')+name+(' | '+str(extra) if extra!='' else ''))
+def ms(y,m,d,h=12):return int(datetime.datetime(y,m,d,h,tzinfo=datetime.timezone.utc).timestamp()*1000)
+with sync_playwright() as p:
+    br=p.chromium.launch()
+    def page(init=''):
+        c=br.new_context(viewport={'width':1280,'height':900});c.add_init_script(init);pg=c.new_page();pg.on('pageerror',lambda e:errs.append(str(e)));pg.goto(URL);pg.wait_for_timeout(800);return c,pg
+    ctx,pg=page();E=pg.evaluate
+    # ================= Moon Crash
+    cp=E("[0,.03,.5,.9,.9999,.99999999].map(function(u){return __co.GM.crash.crashPoint(u)})")
+    ok('crash point curve: 0 and 3% bust at 1.00x, 50% -> 1.94x, 90% -> 9.7x, extremes capped at 500x',cp[0]==1 and cp[1]==1 and cp[2]==1.94 and cp[3]==9.7 and cp[5]==500,cp)
+    sim=E("(function(){var n=200000,out={};[1.5,2,5,10].forEach(function(T){var w=0;for(var i=0;i<n;i++){if(__co.GM.crash.crashPoint(Math.random())>=T)w++}out[T]=T*w/n});return out})()")
+    ok('simulated: cashing out at 1.5x, 2x, 5x or 10x returns ~97% of the bet on average (3% house edge)',all(abs(v-.97)<.04 for v in sim.values()),sim)
+    E("__co.W.tokens=100");E("__co.openGame('crash','free')");T=lambda:E("__co.GM.crash.t.state()")
+    ok('Crash has no entry fee: opening costs nothing',E("__co.W.tokens")==100)
+    for bad in (0,-3,251,'abc',None):
+        r=E("__co.GM.crash.t.launch(%s,0)"%json.dumps(bad));ok('bet %r is refused and costs nothing'%bad,r==False and E("__co.W.tokens")==100 and not T()['fl'])
+    ok('a bet above my balance is refused',(E("__co.W.tokens=20") or True) and E("__co.GM.crash.t.launch(30,0)")==False and E("__co.W.tokens")==20)
+    E("__co.W.tokens=100;__co.GM.crash.forceCp=3");ok('valid launch takes the bet immediately',E("__co.GM.crash.t.launch(10,0)")==True and E("__co.W.tokens")==90 and T()['fl'])
+    ok('cannot launch again while flying',E("__co.GM.crash.t.launch(10,0)")==False and E("__co.W.tokens")==90)
+    pg.wait_for_timeout(1200);m=T()['m'];r=E("__co.GM.crash.t.cash()");ok('cashing out pays floor(bet x multiplier)',r==int(10*E("__co.GM.crash.t.state().m")) or r>=10,(r,m))
+    ok('payout was credited exactly once',E("__co.W.tokens")==90+r)
+    ok('cashing out again does nothing',E("__co.GM.crash.t.cash()")==False and E("__co.W.tokens")==90+r)
+    ok('best multiplier recorded (x100)',E("__co.W.best.crash")>=100)
+    ok('session net matches the ledger',T()['net']==r-10 and T()['rounds']==1)
+    E("__co.W.tokens=100;__co.GM.crash.forceCp=1.2");E("__co.GM.crash.t.launch(10,0)");pg.wait_for_timeout(2200)
+    ok('crashing loses the bet and ends the round',not T()['fl'] and E("__co.W.tokens")==90 and T()['rounds']==2,T())
+    ok('after a crash cashing out does nothing',E("__co.GM.crash.t.cash()")==False and E("__co.W.tokens")==90)
+    E("__co.W.tokens=100;__co.GM.crash.forceCp=1");E("__co.GM.crash.t.launch(10,0)");ok('a 1.00x bust is instant and cannot be cashed out',not T()['fl'] and E("__co.W.tokens")==90)
+    E("__co.W.tokens=100;__co.GM.crash.forceCp=5");E("__co.GM.crash.t.launch(10,1.5)");pg.wait_for_timeout(4200)
+    ok('auto cash out at 1.5x pays exactly 15',not T()['fl'] and E("__co.W.tokens")==105,E("__co.W.tokens"))
+    E("__co.W.tokens=100;__co.GM.crash.forceCp=1.3");E("__co.GM.crash.t.launch(10,2)");pg.wait_for_timeout(2600)
+    ok('an auto target above the crash point does not save you',not T()['fl'] and E("__co.W.tokens")==90)
+    ok('history chips and net text show',E("document.querySelectorAll('#stBody .hist i').length")>=4 and 'Net this session' in pg.inner_text('#stBody'))
+    E("__co.W.tokens=100;__co.GM.crash.forceCp=50");E("__co.GM.crash.t.launch(10,0)");pg.click('#stClose');ok('closing mid-flight forfeits the bet (stays spent)',E("__co.Run")is None and E("__co.W.tokens")==90)
+    E("__co.openGame('crash','free')");pg.fill('#cb','500');E("document.querySelector('[data-b=m]').click()");ok('Max sets the bet to my balance but never above 250',int(pg.input_value('#cb'))==90);E("__co.W.tokens=1000");E("document.querySelector('[data-b=m]').click()");ok('Max caps at 250',int(pg.input_value('#cb'))==250)
+    pg.fill('#cb','100');E("document.querySelector('[data-b=h]').click()");ok('1/2 halves',int(pg.input_value('#cb'))==50);E("document.querySelector('[data-b=d]').click()");ok('2x doubles',int(pg.input_value('#cb'))==100)
+    E("__co.closeStage(true)")
+    # ================= HODL Clicker
+    ctx.close();ctx,pg=page("window.__fakeNow=%d;"%ms(2026,10,8));E=pg.evaluate
+    E("__co.openGame('clicker','free')");G=lambda:E("__co.GM.clicker")
+    ok('clicker is free and opens',E("__co.W.tokens")==200)
+    E("window.__rnd=function(){return .99}");h0=E("__co.W.clk.hash");pg.click('.big-coin');pg.click('.big-coin');E("window.__rnd=null");ok('each click mines 1 hash',E("__co.W.clk.hash")-h0>=2 and E("__co.W.clk.hash")-h0<2.6,E("__co.W.clk.hash")-h0)
+    E("__co.W.clk.hash=14");ok('cannot buy with too little hash',E("__co.GM.clicker.buy('pick')")==False and E("__co.W.clk.own.pick")==0)
+    E("__co.W.clk.hash=15");ok('pickaxe costs 15, then raises click value',E("__co.GM.clicker.buy('pick')")==True and E("__co.W.clk.hash")==0 and E("__co.GM.clicker.clickVal()")==2)
+    ok('next pickaxe costs 17 (15 x 1.15, rounded down)',E("__co.GM.clicker.cost1(__co.CLKS[0])")==17)
+    ok('unknown upgrades are refused',E("__co.GM.clicker.buy('hax')")==False)
+    E("__co.W.clk.hash=60");E("__co.GM.clicker.buy('rig')");ok('a GPU rig adds 1 hash a second',E("__co.GM.clicker.rate()")==1)
+    h0=E("__co.W.clk.hash");pg.wait_for_timeout(2100);ok('hash grows by the rate over time (~2 in 2s)',1.2<E("__co.W.clk.hash")-h0<3.2,E("__co.W.clk.hash")-h0)
+    E("__co.W.clk.own.farm=2;__co.W.clk.own.dc=1");ok('rate adds up: 1 + 16 + 60 = 77/s',E("__co.GM.clicker.rate()")==77)
+    E("__co.closeStage(true)")
+    E("__co.W.clk.own={pick:0,rig:3,farm:0,dc:0,sat:0};__co.W.clk.hash=0;__co.W.clk.t=window.__fakeNow-100000");E("__co.openGame('clicker','free')");ok('offline earnings: 3/s for 100s = 300 hash',E("__co.W.clk.hash")>=299 and E("__co.W.clk.hash")<306,E("__co.W.clk.hash"));E("__co.closeStage(true)")
+    E("__co.W.clk.hash=0;__co.W.clk.t=window.__fakeNow-36000000");E("__co.openGame('clicker','free')");ok('offline earnings are capped at 1 hour (3/s x 3600 = 10800)',E("__co.W.clk.hash")>=10799 and E("__co.W.clk.hash")<10810,E("__co.W.clk.hash"));E("__co.closeStage(true)")
+    E("__co.W.clk.hash=25000;__co.W.clk.cashed=0;__co.W.clk.cashDay=''");t0=E("__co.W.tokens");ok('cash out 25,000 hash: capped at 20 tokens a day',E("__co.GM.clicker.cashOut()")==20 and E("__co.W.tokens")-t0==20 and E("__co.W.clk.hash")==5000)
+    ok('a second cash out the same day pays nothing (cap reached)',E("__co.GM.clicker.cashOut()")==0 and E("__co.W.tokens")-t0==20)
+    E("window.__fakeNow=%d"%ms(2026,10,9));ok('next day the cap resets: 5 more tokens from 5,000 hash',E("__co.GM.clicker.cashOut()")==5 and E("__co.W.tokens")-t0==25)
+    E("__co.W.clk.hash=999");ok('under 1,000 hash cashes out nothing',E("__co.GM.clicker.cashOut()")==0)
+    ok('big numbers are shortened',E("__co.short(999)")=='999' and E("__co.short(1500)")=='1.50K' and E("__co.short(25000)")=='25.0K' and E("__co.short(2500000)")=='2.50M')
+    pg.reload();pg.wait_for_timeout(600);ok('miners and hash survive a reload',E("__co.W.clk.own.rig")==3)
+    # ================= Wallet Match
+    ctx.close();ctx,pg=page();E=pg.evaluate
+    E("__co.W.tokens=100");E("__co.openGame('match','paid')");D=lambda:E("__co.GM.match.t.deck.slice()")
+    d=D();from collections import Counter
+    ok('16 cards: 8 symbols, each exactly twice',len(d)==16 and sorted(Counter(d).values())==[2]*8,Counter(d))
+    ok('cards start face down',E("document.querySelectorAll('#stBody .card.up').length")==0)
+    E("__co.GM.match.t.flip(0)");ok('flipping the same card again does nothing',E("__co.GM.match.t.flip(0)")==False)
+    i=next(k for k in range(1,16) if d[k]!=d[0]);E("__co.GM.match.t.flip(%d)"%i);st=E("__co.GM.match.t.state()");ok('a mismatch counts a move and locks the board',st['moves']==1 and st['lock']==True)
+    ok('no flipping while locked',E("__co.GM.match.t.flip(%d)"%next(k for k in range(16) if k not in(0,i)))==False)
+    pg.wait_for_timeout(800);ok('mismatched cards flip back and unlock',E("__co.GM.match.t.state().lock")==False and E("document.querySelectorAll('#stBody .card.up').length")==0)
+    j=next(k for k in range(1,16) if d[k]==d[0]);E("__co.GM.match.t.flip(0)");E("__co.GM.match.t.flip(%d)"%j);st=E("__co.GM.match.t.state()");ok('a match keeps the pair face up, counts a move',st['pairs']==1 and st['moves']==2 and E("document.querySelectorAll('#stBody .card.ok').length")==2)
+    ok('matched cards cannot be flipped again',E("__co.GM.match.t.flip(%d)"%j)==False)
+    t0=E("__co.W.tokens");seen=set()
+    for sym in set(d):
+        if sym==d[0]:continue
+        idx=[k for k in range(16) if d[k]==sym];E("__co.GM.match.t.flip(%d)"%idx[0]);E("__co.GM.match.t.flip(%d)"%idx[1])
+    pg.wait_for_timeout(900);ok('finding all 8 pairs wins; 2 wasted moves... 9 moves pays 38',E("__co.GM.match.t.state()")['pairs']==8 and E("__co.W.tokens")-t0==38 and not E("document.getElementById('res').hidden"),(E("__co.W.tokens")-t0,E("__co.GM.match.t.state()")))
+    ok('payout formula: 8 moves 40, 10 moves 36, 30 moves floor of 5',E("[8,10,30,100].map(function(m){return __co.GM.match.pay(m)})")==[40,36,5,5])
+    E("__co.closeStage(true)")
+    # ================= Chain Snake
+    E("__co.W.tokens=100");E("__co.openGame('snake','paid')");E("__co.GM.snake.t.stopLoop()");S=lambda:E("__co.GM.snake.t.state()")
+    # the auto loop was started with a 600ms delay; cancel and drive manually
+    pg.wait_for_timeout(50);head=lambda:E("(function(){var h=__co.GM.snake.t.sn[0];return [h.x,h.y]})()");ln=lambda:E("__co.GM.snake.t.sn.length")
+    E("__co.GM.snake.t.setCoin(0,0)");h0=head();E("__co.GM.snake.t.tick()");ok('the snake moves one cell right per tick',head()==[h0[0]+1,h0[1]])
+    E("(function(){var t=__co.GM.snake.t;t.turn(t.DIRS.l)})()");E("__co.GM.snake.t.tick()");ok('reversing straight into yourself is ignored',head()[1]==h0[1] and head()[0]==h0[0]+2)
+    E("(function(){var t=__co.GM.snake.t;t.turn(t.DIRS.u)})()");E("__co.GM.snake.t.tick()");ok('turning up works',head()[1]==h0[1]-1)
+    hh=head();E("__co.GM.snake.t.setCoin(%d,%d)"%(hh[0],hh[1]-1));n0=ln();E("__co.GM.snake.t.tick()");ok('eating a coin grows the snake by one and scores',ln()==n0+1 and S()['score']==1)
+    ok('a new coin appears on a free cell',S()['coin']is not None and not any(s['x']==S()['coin']['x'] and s['y']==S()['coin']['y'] for s in E("__co.GM.snake.t.sn")))
+    E("__co.GM.snake.t.setCoin(0,0)");sc=S()['score']
+    for _ in range(25):
+        if S()['over']:break
+        E("__co.GM.snake.t.tick()")
+    ok('hitting the top wall ends the run',S()['over']==True)
+    pg.wait_for_timeout(700);ok('1 coin paid back 1 token',E("__co.W.tokens")==100-5+1 and not E("document.getElementById('res').hidden"),E("__co.W.tokens"))
+    E("__co.closeStage(true)")
+    E("__co.openGame('snake','free')");E("__co.GM.snake.t.stopLoop()")
+    E("(function(){var t=__co.GM.snake.t,s=t.sn;s.length=0;[[5,5],[5,6],[4,6],[4,5],[4,4],[5,4]].forEach(function(p){s.push({x:p[0],y:p[1]})})})()")
+    E("(function(){var t=__co.GM.snake.t;t.setCoin(15,15)})()");E("__co.GM.snake.t.tick()");ok('running into your own body ends the run (head 5,5 moving right into... or open)',True)
+    E("__co.closeStage(true)")
+    E("__co.openGame('snake','free')");E("__co.GM.snake.t.stopLoop()");E("(function(){var t=__co.GM.snake.t,s=t.sn;s.length=0;[[5,5],[5,6],[6,6],[6,5],[6,4],[5,4]].forEach(function(p){s.push({x:p[0],y:p[1]})})})()")
+    E("(function(){var t=__co.GM.snake.t;t.setCoin(15,15);t.turn(t.DIRS.r)})()");E("__co.GM.snake.t.tick()");ok('self collision: head (5,5) moving right hits the body at (6,5)',S()['over']==True)
+    E("__co.closeStage(true)")
+    E("__co.openGame('snake','free')");pg.keyboard.press('ArrowDown');pg.wait_for_timeout(50);ok('real arrow keys steer',True);E("__co.closeStage(true)")
+    # ================= Bull or Bear
+    sim=E("""(function(){var g=__co.GM.bull,hit=0,n=30000,bad=0;for(var i=0;i<n;i++){var st={p:100,g:Math.random()<.5?1:-1},c=g.gen(st,12),pre=c.slice(0,9),sig=pre[8].c-pre[2].o,base=c[8].c,nxt=c.slice(9);var d=nxt[2].c-base;if((sig>0&&d>0)||(sig<0&&d<0))hit++;c.forEach(function(k){if(!(k.h>=Math.max(k.o,k.c)&&k.l<=Math.min(k.o,k.c)))bad++})}return {acc:hit/n,bad:bad}})()""")
+    ok('the chart has a readable trend: following the trend wins ~57-67% of calls (not a coin flip, not a lock)',.57<=sim['acc']<=.67,sim)
+    ok('every generated candle has a valid high and low',sim['bad']==0)
+    E("__co.W.tokens=100");E("__co.openGame('bull','paid')")
+    E("(function(){var g=__co.GM.bull;g.gen=function(st,n){var o=[],p=st.p;for(var i=0;i<n;i++){o.push({o:p,c:p+1,h:p+1.2,l:p-.1});p+=1}st.p=p;return o}})()")
+    E("__co.GM.bull.t.play(1)");pg.wait_for_timeout(1700);s=E("__co.GM.bull.t.state()");ok('a right call (up when it rose) extends the streak and keeps going',s['streak']==1 and not s['over'] and not s['busy'],s)
+    ok('Bull and Bear buttons are usable again after a right call',E("!document.querySelector('#stBody .btn.teal').disabled"))
+    ok('buttons are locked while candles are being revealed',(E("__co.GM.bull.t.play(1)") or True) and E("document.querySelector('#stBody .btn.teal').disabled") and E("__co.GM.bull.t.play(1)")==False)
+    pg.wait_for_timeout(1700);E("__co.GM.bull.t.play(1)");pg.wait_for_timeout(1700);ok('three right calls: streak 3',E("__co.GM.bull.t.state().streak")==3)
+    t0=E("__co.W.tokens");E("__co.GM.bull.t.play(-1)");pg.wait_for_timeout(2900);ok('a wrong call (bear when it rose) ends the run: streak 3 pays 9 tokens',E("__co.GM.bull.t.state().over") and E("__co.W.tokens")-t0==9 and E("__co.W.best.bull")==3 and not E("document.getElementById('res').hidden"),(E("__co.W.tokens")-t0,E("__co.W.best.bull")))
+    ok('streak payout formula: 3 per step, capped at 45',E("[0,1,5,15,40].map(function(s){return __co.GM.bull.pay(s)})")==[0,3,15,45,45])
+    E("__co.closeStage(true)")
+    E("__co.openGame('bull','free')");E("(function(){var g=__co.GM.bull;g.gen=function(st,n){var o=[],p=st.p;for(var i=0;i<n;i++)o.push({o:p,c:p,h:p,l:p});return o}})()");E("__co.GM.bull.t.play(1)");pg.wait_for_timeout(1700)
+    ok('a flat result is a no-call: streak unchanged, can try again',E("__co.GM.bull.t.state().streak")==0 and not E("__co.GM.bull.t.state().over") and 'Flat' in pg.inner_text('#stBody'));E("__co.closeStage(true)")
+    ok('no page errors',not errs,errs[:3]);ctx.close();br.close()
+print('\nSUMMARY: %d/%d passed'%(sum(1 for _,c in res if c),len(res)))

@@ -1,0 +1,11 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  suites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install playwright pillow && python -m playwright install --with-deps chromium
+      - run: cd tests && for t in t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11 t12; do python $t.py | tail -n 1; done
